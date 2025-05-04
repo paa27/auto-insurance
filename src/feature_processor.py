@@ -85,12 +85,12 @@ class FeatureProcessor:
             df['vehicle_age'] = (self.reference_date - df['vehicle_registration_ym']).dt.days / 365.25
         
         # Extract temporal features from timestamp
-        if 'timestamp' in df.columns:
-            df['quote_hour'] = df['timestamp'].dt.hour.astype(int)
-            df['quote_day'] = df['timestamp'].dt.day.astype(int)
-            df['quote_month'] = df['timestamp'].dt.month.astype(int)
-            df['quote_day_of_week'] = df['timestamp'].dt.dayofweek.astype(int)
-            df['quote_is_weekend'] = df['quote_day_of_week'].isin([5, 6]).astype(int)
+        # if 'timestamp' in df.columns:
+        #     df['quote_hour'] = df['timestamp'].dt.hour.astype(int)
+        #     df['quote_day'] = df['timestamp'].dt.day.astype(int)
+        #     df['quote_month'] = df['timestamp'].dt.month.astype(int)
+        #     df['quote_day_of_week'] = df['timestamp'].dt.dayofweek.astype(int)
+        #     df['quote_is_weekend'] = df['quote_day_of_week'].isin([5, 6]).astype(int)
         
         # Drop original datetime columns
         df = df.drop(columns=[col for col in self.datetime_columns if col in df.columns])
@@ -107,6 +107,64 @@ class FeatureProcessor:
         
         return df
     
+    def _process_vehicle_acquisition_state(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Process vehicle acquisition state feature."""
+        df = df.copy()
+        
+        # Convert vehicle acquisition state
+        if 'vehicle_acquisition_state' in df.columns:
+            # Create vehicle_acquisition_time feature
+            df['vehicle_acquisition_time_OWNED'] = df['vehicle_acquisition_state'].str.lower().str.contains('owned').astype(int)
+            df['vehicle_acquisition_time_BUYING'] = df['vehicle_acquisition_state'].str.lower().str.contains('buying').astype(int)
+            df['vehicle_acquisition_time_RECENT'] = df['vehicle_acquisition_state'].str.lower().str.contains('recent').astype(int)
+            
+            # Create vehicle_acquisition_first_hand feature
+            # If owned, it's second_hand by default
+            df['vehicle_acquisition_FIRST_HAND'] = 0  # Default to second_hand (0)
+            
+            # check if first_hand
+            first_hand_mask = df['vehicle_acquisition_state'].str.lower().str.contains('first_hand')
+            df.loc[first_hand_mask, 'vehicle_acquisition_FIRST_HAND'] = 1
+            
+            # Create vehicle_acquisition_private feature
+            # If owned, it's always private
+            df['vehicle_acquisition_PRIVATE'] = 1  # Default to private (1)        
+            dealer_mask = df['vehicle_acquisition_state'].str.lower().str.contains('dealer')
+            df.loc[dealer_mask, 'vehicle_acquisition_PRIVATE'] = 0
+            
+            # Drop original vehicle_acquisition_state column
+            df = df.drop(columns=['vehicle_acquisition_state'])
+
+        return df
+        
+    
+    def _process_vehicle_use(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Process vehicle use feature."""
+        df = df.copy()
+        
+        # Convert vehicle use
+        if 'vehicle_use' in df.columns:
+            # Create professional vs personal feature
+            df['vehicle_use_PROFESSIONAL'] = df['vehicle_use'].str.lower().str.contains('professional').astype(int)
+            
+            # Create habitual vs occasional feature
+            df['vehicle_use_HABITUAL'] = df['vehicle_use'].str.lower().str.contains('habitual').astype(int)
+            
+            # Drop original vehicle_use column
+            df = df.drop(columns=['vehicle_use'])
+        
+        return df
+    
+    def _process_total_claims(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Process total claims feature."""
+        df = df.copy()
+        
+        # Convert number of claims
+        if all(claim in df.columns for claim in self.claims_columns):
+            df['total_claims'] = df[self.claims_columns].sum(axis=1)
+            #df = df.drop(columns=self.claims_columns)
+        
+        return df
     
     def _process_categorical(self, df: pd.DataFrame, training: bool = False) -> pd.DataFrame:
         """Process categorical features including encoding."""
@@ -197,13 +255,16 @@ class FeatureProcessor:
         # Sequential processing
         df = self._process_dates(df)
         df = self._process_insured_years(df)
+        df = self._process_vehicle_use(df)
+        df = self._process_vehicle_acquisition_state(df)
+        df = self._process_total_claims(df)
         # Fit step (compute statistics) if requested
         if fit:
             self._compute_statistics(df)
             
         df = self._handle_missing_values(df, training=fit)
         df = self._process_categorical(df, training=fit)
-        df = self._create_risk_features(df)
+        #df = self._create_risk_features(df)
         
         # Ensure all features are numeric
         non_numeric_cols = df.select_dtypes(exclude=['int64', 'float64']).columns
