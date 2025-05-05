@@ -1,7 +1,7 @@
 # src/model.py
 import pandas as pd
 import numpy as np
-from typing import Tuple, Optional, List
+from typing import Tuple, Optional, List, Union
 import xgboost as xgb
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_absolute_error
@@ -12,12 +12,16 @@ import numpy as np
 
 import src.utils as utils
 
+BIG_NUMBER_TO_AVOID_SALE = 1e6
+DEFAULT_QUANTILES = np.linspace(0.05, 0.95, 19)
+
 class PricingModel:
-    def __init__(self, quantiles: List[float] = [0.1, 0.3, 0.5, 0.7, 0.9]):
+    def __init__(self, quantiles: Union[List[float], np.ndarray] = DEFAULT_QUANTILES):
         self.base_models = {}
         self.evals_results = {}
         self.opti_pricing_problem = None
         self.opti_pricing_results = None
+        self.opti_pricing_params = None
         self.feature_names = None
         self.price_adjustment_factors = None
         self.quantiles = quantiles
@@ -69,7 +73,7 @@ class PricingModel:
         
         return model
     
-    def _train_base_models(self, 
+    def train_base_models(self, 
                           X_train: pd.DataFrame, 
                           y_train: pd.Series,
                           X_val: pd.DataFrame,
@@ -81,7 +85,7 @@ class PricingModel:
                 X_train, y_train, X_val, y_val, quantile
             )
     
-    def _optimize_pricing_strategy(self, X_train, y_train, X_val, y_val):
+    def optimize_pricing_strategy(self, X_train, y_train):
         """Optimize the pricing strategy."""
         self.opti_pricing_problem = PricingOptimizationProblem(self, X_train, y_train)
         algorithm = NSGA2(
@@ -96,6 +100,48 @@ class PricingModel:
                        )
         self.opti_pricing_results = res
 
+    def select_optimized_pricing_strategy(self, market_share_threshold: float = 0.3):
+        """Select the optimized pricing strategy based on the market share threshold."""
+        assert self.opti_pricing_results is not None, "No optimized pricing results found. Please run optimize_pricing_strategy first."
+        assert self.opti_pricing_results.X is not None, "No optimized pricing results found. Please run optimize_pricing_strategy first."
+        assert self.opti_pricing_results.F is not None, "No optimized pricing results found. Please run optimize_pricing_strategy first."
+        solutions = self.opti_pricing_results.X
+        market_shares = -self.opti_pricing_results.F[:, 1]
+        avg_losses = self.opti_pricing_results.F[:, 0]
+        
+        # Filter solutions based on market share threshold
+        valid_indices = np.where(market_shares >= market_share_threshold)[0]
+        
+        if len(valid_indices) == 0:
+            raise ValueError("No valid strategies found. Please try a different market share threshold.")
+        
+        # Sort valid solutions by market share
+        valid_indices = valid_indices[np.argsort(market_shares[valid_indices])]
+        
+        # Select the solution with market share just above the threshold
+        selected_index = valid_indices[0]  # The first one after sorting will be just above threshold
+        
+        # Get the corresponding strategy
+        valid_strategy = solutions[selected_index]
+        market_share = market_shares[selected_index]
+        avg_loss = avg_losses[selected_index]
+        self.opti_pricing_params = valid_strategy
+
+        return valid_strategy, market_share, avg_loss
+    
+    def predict(self, X: pd.DataFrame) -> pd.Series:
+        """Predict the prices for the given input data."""
+        assert self.opti_pricing_params is not None, "No optimized pricing parameters found. Please run select_optimized_pricing_strategy first."
+        assert self.base_models is not None, "No base models found. Please run train_base_models first."
+        assert self.quantiles is not None, "No quantiles found. Please set the quantiles."
+        
+        predictions = {q: self.base_models[q].predict(xgb.DMatrix(X))
+                             for q in self.base_models.keys()}
+        
+        adjusted_prices = PricingOptimizationProblem.compute_adjusted_prices(predictions, self.opti_pricing_params)
+        
+        
+        return adjusted_prices
     
 
 
@@ -114,6 +160,59 @@ class PricingOptimizationProblem(Problem):
                  "upper_quantile",
                  "lower_quantile", 
                  "spread_switch"]
+    
+    @staticmethod
+    def interp_pred_from_precomputed(predictions, target_quantile):
+        """
+        Interpolate between precomputed quantile predictions to get predictions for any quantile.
+        
+        Args:
+            target_quantile: The desired quantile (between 0 and 1) to interpolate
+            
+        Returns:
+            Interpolated predictions for the specified quantile
+        """
+        # Get the available quantiles
+        available_quantiles = sorted(predictions.keys())
+        
+        # Handle edge cases
+        if target_quantile <= min(available_quantiles):
+            return predictions[min(available_quantiles)]
+        
+        if target_quantile >= max(available_quantiles):
+            return predictions[max(available_quantiles)]
+        
+        # Find the two quantiles that sandwich the requested quantile
+        lower_quantile = max([q for q in available_quantiles if q <= target_quantile])
+        upper_quantile = min([q for q in available_quantiles if q >= target_quantile])
+        
+        # If we hit an exact quantile, just return that prediction
+        if lower_quantile == upper_quantile:
+            return predictions[lower_quantile]
+        
+        # Get predictions for the two quantiles
+        lower_preds = predictions[lower_quantile]
+        upper_preds = predictions[upper_quantile]
+        
+        # Linearly interpolate between the two predictions
+        weight = (target_quantile - lower_quantile) / (upper_quantile - lower_quantile)
+        interpolated_preds = lower_preds * (1 - weight) + upper_preds * weight
+        
+        return interpolated_preds
+    
+    @staticmethod
+    def compute_adjusted_prices(predictions, params):
+        """Compute the adjusted prices for the given input data."""
+        pred_quantile, upper_quantile, lower_quantile, upper_spread_switch = params
+        adjusted_prices = PricingOptimizationProblem.interp_pred_from_precomputed(predictions, pred_quantile)
+        upper_prices = PricingOptimizationProblem.interp_pred_from_precomputed(predictions, upper_quantile)
+        lower_prices = PricingOptimizationProblem.interp_pred_from_precomputed(predictions, lower_quantile)
+        spread = upper_prices - lower_prices
+        spread_norm = (spread - spread.mean())/spread.std()
+        adjusted_prices = adjusted_prices +  BIG_NUMBER_TO_AVOID_SALE*(spread_norm > upper_spread_switch)
+            
+        return adjusted_prices
+
     def __init__(self, pricing_model, X_train, y_train):
         super().__init__(n_var=4, n_obj=2, n_constr=0,
                           xl=np.array([0.05, 0.05, 0.05, -3]),
@@ -124,26 +223,14 @@ class PricingOptimizationProblem(Problem):
 
         self.predictions = {q: self.pricing_model.base_models[q].predict(xgb.DMatrix(self.X_train))
                              for q in self.pricing_model.base_models.keys()}
-          
+         
     def _evaluate(self, x, out, *args, **kwargs):
         # Extract parameters
         f_values = np.zeros((len(x), 2))  # Two objectives: avg_loss and -market_share
         
         for i, params in enumerate(x):
-            (
-            pred_quantile,
-            upper_quantile,
-            lower_quantile,
-            upper_spread_switch,
-            ) = params
             
-            adjusted_prices = self.interp_pred_from_precomputed(pred_quantile)
-            upper_prices = self.interp_pred_from_precomputed(upper_quantile)
-            lower_prices = self.interp_pred_from_precomputed(lower_quantile)
-            spread = upper_prices - lower_prices
-            spread_norm = (spread - spread.mean())/spread.std()
-            adjusted_prices = adjusted_prices +  1e6*(spread_norm > upper_spread_switch)
-            #adjusted_prices = adjusted_prices +  1e6*(spread_norm < lower_spread_switch)
+            adjusted_prices = PricingOptimizationProblem.compute_adjusted_prices(self.predictions, params)
             
             # Calculate metrics
             avg_loss, market_share = utils.metrics(adjusted_prices, self.y_train)
@@ -157,40 +244,4 @@ class PricingOptimizationProblem(Problem):
         
         out["F"] = f_values
 
-    def interp_pred_from_precomputed(self, target_quantile):
-        """
-        Interpolate between precomputed quantile predictions to get predictions for any quantile.
-        
-        Args:
-            target_quantile: The desired quantile (between 0 and 1) to interpolate
-            
-        Returns:
-            Interpolated predictions for the specified quantile
-        """
-        # Get the available quantiles
-        available_quantiles = sorted(self.predictions.keys())
-        
-        # Handle edge cases
-        if target_quantile <= min(available_quantiles):
-            return self.predictions[min(available_quantiles)]
-        
-        if target_quantile >= max(available_quantiles):
-            return self.predictions[max(available_quantiles)]
-        
-        # Find the two quantiles that sandwich the requested quantile
-        lower_quantile = max([q for q in available_quantiles if q <= target_quantile])
-        upper_quantile = min([q for q in available_quantiles if q >= target_quantile])
-        
-        # If we hit an exact quantile, just return that prediction
-        if lower_quantile == upper_quantile:
-            return self.predictions[lower_quantile]
-        
-        # Get predictions for the two quantiles
-        lower_preds = self.predictions[lower_quantile]
-        upper_preds = self.predictions[upper_quantile]
-        
-        # Linearly interpolate between the two predictions
-        weight = (target_quantile - lower_quantile) / (upper_quantile - lower_quantile)
-        interpolated_preds = lower_preds * (1 - weight) + upper_preds * weight
-        
-        return interpolated_preds
+

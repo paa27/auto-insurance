@@ -27,9 +27,11 @@ class FeatureProcessor:
         ]
         
         self.onehot_columns = [
-            'vehicle_use',
-            'vehicle_acquisition_state',
             'driver_other_vehicles',
+        ]
+
+        self.todrop_columns = [
+            'number_of_competitors',
         ]
         
         self.claims_columns = [
@@ -195,27 +197,12 @@ class FeatureProcessor:
         
         return df
     
-    def _create_risk_features(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Create all risk-related features."""
+    def _drop_columns(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Drop columns that are not needed."""
         df = df.copy()
-        
-        # Process claims
-        for col in self.claims_columns:
+        for col in self.todrop_columns:
             if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
-        
-        # Claims-based features
-        df['total_claims'] = df[self.claims_columns].sum(axis=1)
-        
-        # Experience-based features
-        if all(col in df.columns for col in ['driver_age', 'driving_experience']):
-            df['experience_ratio'] = df['driving_experience'] / df['driver_age']
-            df['claims_per_experience_year'] = df['total_claims'] / (df['driving_experience'] + 1)
-        
-        # Vehicle-based features
-        if all(col in df.columns for col in ['vehicle_engine_power', 'vehicle_age']):
-            df['power_to_age_ratio'] = df['vehicle_engine_power'] / (df['vehicle_age'] + 1)
-        
+                df = df.drop(columns=[col])
         return df
     
     def _handle_missing_values(self, df: pd.DataFrame, training: bool = False) -> pd.DataFrame:
@@ -247,9 +234,6 @@ class FeatureProcessor:
         if not self.numeric_statistics and not fit:
             raise ValueError("Processor not fitted. Call with fit=True or use fit() before transform().")
         
-        if not isinstance(df, pd.DataFrame):
-            raise ValueError("Input must be a pandas DataFrame")
-        
         df = df.copy()
 
         # Sequential processing
@@ -264,7 +248,8 @@ class FeatureProcessor:
             
         df = self._handle_missing_values(df, training=fit)
         df = self._process_categorical(df, training=fit)
-        #df = self._create_risk_features(df)
+        df = self._drop_columns(df)
+
         
         # Ensure all features are numeric
         non_numeric_cols = df.select_dtypes(exclude=['int64', 'float64']).columns
