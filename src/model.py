@@ -36,7 +36,7 @@ class PricingModel:
         }
         self.optimizer_params = {
             'n_gen': 100,
-            'pop_size': 100,
+            'pop_size': 200,
             'seed': 42,
             'verbose': True
         }
@@ -150,16 +150,11 @@ class PricingOptimizationProblem(Problem):
     """
     Pricing optimization problem for the pricing model. 
     The problem is to find the optimal pricing strategy that maximizes the market share (up to 30%) and minimizes the average loss.
-    We vary 4 parameters:
-    - pred_quantile: the quantile to predict price offered
-    - upper_quantile: the upper quantile to use in spread calculation
-    - lower_quantile: the lower quantile to use in spread calculation
-    - spread_switch: the threshold for the spread, above which price prediction is discarded
     """
-    VAR_NAMES = ["pred_quantile",
-                 "upper_quantile",
-                 "lower_quantile", 
-                 "spread_switch"]
+    VAR_NAMES = ["q",
+                 "q_high",
+                 "q_low", 
+                 "s_lim"]
     
     @staticmethod
     def interp_pred_from_precomputed(predictions, target_quantile):
@@ -203,13 +198,13 @@ class PricingOptimizationProblem(Problem):
     @staticmethod
     def compute_adjusted_prices(predictions, params):
         """Compute the adjusted prices for the given input data."""
-        pred_quantile, upper_quantile, lower_quantile, upper_spread_switch = params
-        adjusted_prices = PricingOptimizationProblem.interp_pred_from_precomputed(predictions, pred_quantile)
-        upper_prices = PricingOptimizationProblem.interp_pred_from_precomputed(predictions, upper_quantile)
-        lower_prices = PricingOptimizationProblem.interp_pred_from_precomputed(predictions, lower_quantile)
+        q, q_high, q_low, s_lim = params
+        adjusted_prices = PricingOptimizationProblem.interp_pred_from_precomputed(predictions, q)
+        upper_prices = PricingOptimizationProblem.interp_pred_from_precomputed(predictions, q_high)
+        lower_prices = PricingOptimizationProblem.interp_pred_from_precomputed(predictions, q_low)
         spread = upper_prices - lower_prices
         spread_norm = (spread - spread.mean())/spread.std()
-        adjusted_prices = adjusted_prices +  BIG_NUMBER_TO_AVOID_SALE*(spread_norm > upper_spread_switch)
+        adjusted_prices = adjusted_prices +  BIG_NUMBER_TO_AVOID_SALE*(spread_norm > s_lim)
             
         return adjusted_prices
 

@@ -1,41 +1,33 @@
 # Auto Insurance Pricing Model
 
 ## Overview
-This project implements a solution for the auto insurance pricing challenge described in `data/assignment.pdf`. The goal is to develop a competitive pricing model that balances market share (at least 30%) while maximising average margin with respect to competitors' pricing.
+- This project implements a solution for the auto insurance pricing challenge described in `data/assignment.pdf`. 
+- The final solution script is provided in `notebooks/pipeline.ipynb`. 
+- The actual prediction file can be found in `data/test_evaluation.csv`
+- Slides to be used during interview can be found in `slides.pdf`.
 
-## Model Architecture
+## Pricing strategy
 
-### Core Components
-1. **Feature Processing**
-   - Basic feature engineering class:
-        - temporal features
-        - categorical features
-        - filling of NaN values.
+~~~
+P(Q): pricing model at quantile Q.
 
-2. **Pricing Model**
-   - Multi-quantile XGBoost regression.
-   - Multi-Objective Genetic Algorithm optimisation.
+q: quantile used for pricing estimate.
+q_high: upper quantile for uncertainty estimate.
+q_low: lower quantile for uncertainty estimate.
+s_lim: uncertainty cutoff. Above s_lim, no price is provided.
 
-3. **Notebooks**
-    - Main prediction pipeline: `notebooks/pipeline.ipynb`
-    - Exploratory notebooks
-    - Dimensionality reduction test 
+Strategy:
+
+    s = P(q_high) - P(q_low)
+    s = (s - s.mean())/s.std()
+
+    if s < s_lim
+        Offer P(q)
+
+    else:
+        No price offered
+
+~~~
 
 
-## Project Structure
-```
-auto-insurance/
-├── data/
-│   ├── assignment.pdf
-│   ├── train.xlsx
-│   └── test.xlsx
-├── notebooks/
-│   ├── exploratory_analysis.ipynb
-│   ├── exploratory_analysis_2.ipynb
-│   ├── pipeline.ipynb
-│   └── dim_reduction.ipynb
-└── src/
-    ├── feature_processor.py
-    ├── model.py
-    └── utils.py
-```
+

@@ -14,7 +14,7 @@ class FeatureProcessor:
         #self.target_encoders: Dict[str, TargetEncoder] = {}
         
         # Fixed reference date
-        self.reference_date = pd.to_datetime('2025-05-01')
+        self.reference_date = pd.to_datetime('2025-05-04')
         
         # Column definitions
         self.datetime_columns = [
